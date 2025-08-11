@@ -36,7 +36,6 @@ cred_info = {
 }
 
 try:
-    # Build proper Credentials object from the JSON dict
     creds = service_account.Credentials.from_service_account_info(cred_info)
     project_id = cred_info["project_id"]
 
