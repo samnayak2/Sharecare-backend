@@ -1,14 +1,14 @@
+import base64
+import json
+import os
 from fastapi import APIRouter
 from fastapi import APIRouter, FastAPI, HTTPException, status, Depends, Header, Query, File, UploadFile, Form
 from typing import Optional, Dict, Any, List
 import logging
 from datetime import datetime, timedelta
 from google.cloud import firestore, storage
-from google.auth.transport import requests as google_requests
-from google.oauth2 import id_token as idtoken, service_account
 from collections import defaultdict
-import json
-
+from google.oauth2 import  service_account
 from pydantic import BaseModel, EmailStr
 from email_service import email_service
 
@@ -21,29 +21,15 @@ admin_router = APIRouter(
     responses={404: {"description": "Not found"}},
 )
 
-cred_info = {
-    "type": "service_account",
-    "project_id": "sharecare-466314",
-    "private_key_id": "8a0a21d654a94031d2bea21d28b2b2d5fd7354ae",
-    "private_key": "-----BEGIN PRIVATE KEY-----\n...REDACTED...\n-----END PRIVATE KEY-----\n",
-    "client_email": "sharecare-466314@appspot.gserviceaccount.com",
-    "client_id": "107970011439146979175",
-    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-    "token_uri": "https://oauth2.googleapis.com/token",
-    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/sharecare-466314%40appspot.gserviceaccount.com",
-    "universe_domain": "googleapis.com"
-}
-
 try:
-    creds = service_account.Credentials.from_service_account_info(cred_info)
-    project_id = cred_info["project_id"]
+    # Load credentials from base64 env var
+    creds_json = base64.b64decode(os.environ["GOOGLE_APPLICATION_CREDENTIALS"])
+    creds_dict = json.loads(creds_json)
+    credentials = service_account.Credentials.from_service_account_info(creds_dict)
 
-    # Create clients with explicit project & creds
-    db = firestore.Client(project=project_id, credentials=creds)
-    storage_client = storage.Client(project=project_id, credentials=creds)
-
-    # Use your bucket (or derive from project_id)
+    # Firestore & Storage with credentials
+    db = firestore.Client(credentials=credentials, project=creds_dict["project_id"])
+    storage_client = storage.Client(credentials=credentials, project=creds_dict["project_id"])
     bucket = storage_client.bucket("sharecare-466314.appspot.com")
 
     logger.info("Firestore and Storage clients initialized successfully")
