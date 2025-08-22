@@ -77,9 +77,10 @@ class CreateUserRequest(BaseModel):
 
 class UpdateProfileRequest(BaseModel):
     full_name: Optional[str] = None
-    phone_number: Optional[str] = None
+    phoneNumber: Optional[str] = None
     address: Optional[str] = None
     bio: Optional[str] = None
+    photo_url: Optional[str] = None
 
 class UpdatePreferencesRequest(BaseModel):
     theme: Optional[str] = None
@@ -436,10 +437,9 @@ async def verify_token(request: VerifyTokenRequest):
     try:
         user_data = verify_firebase_token(request.id_token)
         
-        # Send login notification (optional, can be enabled/disabled)
+        data= await get_current_user_Data_from_database(user_data["uid"])
         try:
-            # Get IP address from request (you may need to import Request from fastapi)
-            ip_address = "Unknown"  # You can get this from request headers
+            ip_address = "Unknown"  
             await email_service.send_login_notification(user_data["email"], user_data.get("name", "User"), ip_address)
         except Exception as e:
             logger.error(f"Failed to send login notification: {e}")
@@ -448,9 +448,9 @@ async def verify_token(request: VerifyTokenRequest):
             success=True,
             message="Token verified successfully",
             data={
-                "user": user_data,
+                "user": data,
                 "verified": True,
-                "is_admin": user_data["email"] == ADMIN_EMAIL
+                "is_admin": False
             }
         )
     except HTTPException as e:
@@ -563,7 +563,7 @@ async def create_user(
         
         create_notification(
             "New User Registered",
-            f"New {request.account_type} account registered: {request.full_name} ({request.email})",
+            f"New user account registered: {request.full_name} ({request.email})",
             "user_registration",
             [ADMIN_EMAIL]
         )
@@ -635,7 +635,7 @@ async def update_user_profile(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Database connection not available"
         )
-    
+    print("Updating user profile",current_user, request)
     try:
         user_ref = db.collection("users").document(current_user["uid"])
         user_doc = user_ref.get()
@@ -652,13 +652,14 @@ async def update_user_profile(
         
         if request.full_name is not None:
             update_data["full_name"] = request.full_name
-        if request.phone_number is not None:
-            update_data["phoneNumber"] = request.phone_number
+        if request.phoneNumber is not None:
+            update_data["phoneNumber"] = request.phoneNumber
         if request.address is not None:
             update_data["address"] = request.address
         if request.bio is not None:
             update_data["bio"] = request.bio
-        
+        if request.photo_url is not None:
+            update_data["photo_url"] = request.photo_url
         user_ref.update(update_data)
         
         updated_doc = user_ref.get()
@@ -818,7 +819,9 @@ async def create_item(
             "name": current_user_data["full_name"],
             "type": current_user_data["account_type"],
             "rating": 0 ,
-            "photo_url": current_user_data["photo_url"]
+            "photo_url": current_user_data["photo_url"],
+            "phone":current_user_data["phoneNumber"],
+            "email": current_user_data["email"],
         },
             "donor_id": current_user["uid"],
             "donor_name": user_data.get("full_name", "Unknown"),

@@ -128,16 +128,16 @@ class SystemSettingsRequest(BaseModel):
     key: str
     value: Any
 
-def create_notification(title: str, message: str, notification_type: str, target_users: List[str] = None):
+def create_notification(title: str, message: str, notification_type: str, target_users: List[str] = None, contentId: str = None):
     """Create notification in database"""
     try:
         notification_data = {
             "title": title,
             "message": message,
             "type": notification_type,
-            "target_users": target_users or [],
             "created_at": datetime.utcnow().isoformat(),
-            "read_by": []
+            "read": False,
+            "contentId":contentId
         }
         
         db.collection("admin-notifications").add(notification_data)
@@ -153,16 +153,9 @@ async def get_admin_profile():
         # Return static admin profile for now
         admin_profile = {
             "id": "admin_001",
-            "email": "hdreddy4783@gmail.com",
-            "full_name": "Admin User",
+            "email": "samruddhi982@gmail.com",
+            "full_name": "Samruddhi",
             "role": "super_admin",
-            "permissions": [
-                "manage_users",
-                "manage_items", 
-                "view_analytics",
-                "manage_notifications",
-                "system_settings"
-            ],
             "last_login": datetime.utcnow().isoformat(),
             "created_at": "2024-01-01T00:00:00.000Z",
             "avatar_url": None,
@@ -181,38 +174,6 @@ async def get_admin_profile():
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve admin profile"
-        )
-
-@admin_router.put("/profile")
-async def update_admin_profile(
-    full_name: Optional[str] = None,
-    phone: Optional[str] = None,
-    department: Optional[str] = None
-):
-    """Update admin profile information"""
-    try:
-        # In a real implementation, you would update the admin profile in the database
-        updated_profile = {
-            "id": "admin_001",
-            "email": "hdreddy4783@gmail.com",
-            "full_name": full_name or "Admin User",
-            "role": "super_admin",
-            "phone": phone or "+1-234-567-8900",
-            "department": department or "System Administration",
-            "updated_at": datetime.utcnow().isoformat()
-        }
-        
-        return ApiResponse(
-            success=True,
-            message="Admin profile updated successfully",
-            data=updated_profile
-        )
-        
-    except Exception as e:
-        logger.error(f"Error updating admin profile: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to update admin profile"
         )
 
 @admin_router.post("/logout")
@@ -240,7 +201,6 @@ async def get_all_users(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     status_filter: Optional[str] = Query(None),
-    account_type: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     sort_by: str = Query("created_at"),
     sort_order: str = Query("desc"),
@@ -256,9 +216,6 @@ async def get_all_users(
         elif status_filter == "inactive":
             query = query.where("is_active", "==", False)
             
-        if account_type:
-            query = query.where("account_type", "==", account_type)
-        
         docs = query.stream()
         users = []
         
@@ -805,7 +762,7 @@ async def bulk_delete_items(
 @admin_router.get("/notifications")
 async def get_admin_notifications(
     page: int = Query(1, ge=1),
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(10, ge=1, le=100),
     # admin_user: Dict[str, Any] = Depends(get_admin_user)
 ):
     """Get admin notifications"""
@@ -860,30 +817,6 @@ async def get_notification_details(notification_id: str):
         notification_data = notification_doc.to_dict()
         notification_data["id"] = notification_doc.id
         
-        # Add delivery statistics
-        target_users = notification_data.get("target_users", [])
-        total_sent = len(target_users) if target_users else 1000  # Mock data
-        delivered = int(total_sent * 0.95)  # Mock 95% delivery rate
-        read = len(notification_data.get("read_by", []))
-        failed = total_sent - delivered
-        
-        notification_data["delivery_stats"] = {
-            "total_sent": total_sent,
-            "delivered": delivered,
-            "read": read,
-            "failed": failed
-        }
-        
-        # Mock user responses
-        notification_data["user_responses"] = [
-            {
-                "user_id": "user1",
-                "user_name": "John Doe",
-                "response_type": "clicked",
-                "response_time": datetime.utcnow().isoformat()
-            }
-        ]
-        
         return ApiResponse(
             success=True,
             message="Notification details retrieved successfully",
@@ -925,43 +858,6 @@ async def create_admin_notification(
             detail="Failed to create notification"
         )
 
-@admin_router.post("/notifications/{notification_id}/resend")
-async def resend_notification(notification_id: str, data: dict):
-    """Resend notification"""
-    try:
-        notification_ref = db.collection("admin-notifications").document(notification_id)
-        notification_doc = notification_ref.get()
-        
-        if not notification_doc.exists:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Notification not found"
-            )
-        
-        # Create a new notification with updated message
-        notification_data = notification_doc.to_dict()
-        new_message = data.get("message", notification_data.get("message"))
-        
-        create_notification(
-            notification_data.get("title"),
-            new_message,
-            notification_data.get("type"),
-            notification_data.get("target_users")
-        )
-        
-        return ApiResponse(
-            success=True,
-            message="Notification resent successfully"
-        )
-        
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        logger.error(f"Error resending notification: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to resend notification"
-        )
 
 @admin_router.delete("/notifications/{notification_id}")
 async def delete_notification(notification_id: str):
@@ -990,39 +886,6 @@ async def delete_notification(notification_id: str):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete notification"
-        )
-
-@admin_router.put("/reports/{report_id}/resolve")
-async def resolve_report(report_id: str):
-    """Resolve a report"""
-    try:
-        report_ref = db.collection("reports").document(report_id)
-        report_doc = report_ref.get()
-        
-        if not report_doc.exists:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Report not found"
-            )
-        
-        report_ref.update({
-            "status": "resolved",
-            "resolved_at": datetime.utcnow().isoformat(),
-            "resolved_by": "admin"
-        })
-        
-        return ApiResponse(
-            success=True,
-            message="Report resolved successfully"
-        )
-        
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        logger.error(f"Error resolving report: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to resolve report"
         )
 
 @admin_router.get("/users/{user_id}/items")
