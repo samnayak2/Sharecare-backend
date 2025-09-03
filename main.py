@@ -1,9 +1,8 @@
 import base64
 import json
 import os
-from fastapi import APIRouter, FastAPI, HTTPException, status, Depends, Header, Query, File, UploadFile, Form
+from fastapi import  FastAPI, HTTPException, status, Depends, Header, Query, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr
 from typing import Optional, Dict, Any, List
 import logging
 from datetime import datetime, timedelta
@@ -11,8 +10,6 @@ from google.cloud import firestore, storage
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as idtoken, service_account
 import uuid
-import random
-import string
 from email_service import email_service
 from admin_routes import admin_router
 
@@ -39,6 +36,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from models import *
+from util_functions import *
+
 try:
     # Load credentials from base64 env var
     creds_json = base64.b64decode(os.environ["GOOGLE_APPLICATION_CREDENTIALS"])
@@ -60,346 +60,6 @@ except Exception as e:
 
 # Admin email
 ADMIN_EMAIL="samruddhi982@gmail.com"
-
-class ApiResponse(BaseModel):
-    success: bool
-    message: str
-    data: Optional[Dict[str, Any]] = None
-
-class CreateUserRequest(BaseModel):
-    uid: str
-    email: EmailStr
-    full_name: str
-    email_verified: bool = False
-    photo_url: Optional[str] = None
-    account_type: str = "individual"
-    phoneNumber:str
-
-class UpdateProfileRequest(BaseModel):
-    full_name: Optional[str] = None
-    phoneNumber: Optional[str] = None
-    address: Optional[str] = None
-    bio: Optional[str] = None
-    photo_url: Optional[str] = None
-
-class UpdatePreferencesRequest(BaseModel):
-    theme: Optional[str] = None
-    language: Optional[str] = None
-    notifications: Optional[Dict[str, bool]] = None
-
-class VerifyTokenRequest(BaseModel):
-    id_token: str
-
-class AdminLoginRequest(BaseModel):
-    email: EmailStr
-    password: str
-
-class CreateItemRequest(BaseModel):
-    name: str
-    description: str
-    category: str
-    food_type: Optional[str] = None
-    is_bulk_item: bool = False
-    quantity: int = 1
-    location: Dict[str, Any]
-    pickup_times: str
-    expiry_date: Optional[str] = None
-    is_for_sale: bool = False
-    price: float = 0.0
-
-class UpdateItemRequest(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    category: Optional[str] = None
-    pickup_times: Optional[str] = None
-    expiry_date: Optional[str] = None
-    status: Optional[str] = None
-
-class UpdateUserStatusRequest(BaseModel):
-    is_active: bool
-
-class BulkDeleteItemsRequest(BaseModel):
-    item_ids: List[str]
-
-class VerifyItemRequest(BaseModel):
-    is_verified: bool
-
-class NotificationRequest(BaseModel):
-    title: str
-    message: str
-    type: str
-    target_users: Optional[List[str]] = None
-
-class ReservationRequest(BaseModel):
-    item_id: str
-    message: Optional[str] = None
-    requested_quantity: int = 1
-
-class UpdateTrackingStatusRequest(BaseModel):
-    status: str
-    notes: Optional[str] = None
-
-class ReportItemRequest(BaseModel):
-    reason: str
-    description: str
-
-class MarkNotificationReadRequest(BaseModel):
-    notification_ids: List[str]
-
-# Tracking status definitions
-TRACKING_STATUSES = {
-    "request_submitted": {
-        "title": "Request Submitted",
-        "description": "Your request has been submitted to the donor",
-        "icon": "send"
-    },
-    "request_accepted": {
-        "title": "Request Accepted",
-        "description": "Great! The donor has accepted your request",
-        "icon": "check_circle"
-    },
-    "preparing_item": {
-        "title": "Preparing Item",
-        "description": "The donor is preparing your item",
-        "icon": "inventory"
-    },
-    "packing_completed": {
-        "title": "Packing Completed",
-        "description": "Your item has been packed and is ready",
-        "icon": "package"
-    },
-    "ready_for_pickup": {
-        "title": "Ready for Pickup",
-        "description": "Your item is ready for pickup! Contact the donor to arrange collection",
-        "icon": "local_shipping"
-    },
-    "picked_up": {
-        "title": "Item Picked Up",
-        "description": "Item has been successfully picked up",
-        "icon": "done_all"
-    },
-    "completed": {
-        "title": "Completed",
-        "description": "Transaction completed successfully",
-        "icon": "celebration"
-    },
-    "cancelled": {
-        "title": "Cancelled",
-        "description": "The request has been cancelled",
-        "icon": "cancel"
-    }
-}
-
-# Helper functions
-def generate_tracking_id() -> str:
-    """Generate a unique tracking ID"""
-    prefix = "SC"  # ShareCare prefix
-    timestamp = datetime.now().strftime("%y%m%d")
-    random_part = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    return f"{prefix}{timestamp}{random_part}"
-
-def upload_file_to_storage(file_content: bytes, filename: str, content_type: str) -> str:
-    """Upload file to Firebase Storage and return public URL"""
-    try:
-        # Generate unique filename
-        file_extension = filename.split('.')[-1] if '.' in filename else 'jpg'
-        unique_filename = f"{uuid.uuid4()}.{file_extension}"
-        
-        # Upload to storage
-        blob = bucket.blob(f"images/{unique_filename}")
-        blob.upload_from_string(file_content, content_type=content_type)
-        
-        # Make blob publicly accessible
-        blob.make_public()
-        
-        return blob.public_url
-    except Exception as e:
-        logger.error(f"Error uploading file: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to upload file"
-        )
-
-def verify_firebase_token(id_token: str) -> Dict[str, Any]:
-    """Verify Firebase ID token using Google Auth API"""
-    try:
-        auth_req = google_requests.Request()
-        token_info = idtoken.verify_firebase_token(id_token, auth_req)
-
-        if not token_info:
-            raise ValueError('Invalid token')
-
-        return {
-            "uid": token_info.get("sub"),
-            "email": token_info.get("email"),
-            "email_verified": token_info.get("email_verified", False),
-            "name": token_info.get("name", ""),
-            "picture": token_info.get("picture")
-        }
-    except Exception as e:
-        logger.error(f"Token verification failed: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token"
-        )
-
-async def get_current_user(authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
-    """Get current user from Authorization header"""
-    if not authorization:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authorization header required"
-        )
-    
-    try:
-        token = authorization.split(" ")[1] if authorization.startswith("Bearer ") else authorization
-        return verify_firebase_token(token)
-    except IndexError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authorization header format"
-        )
-
-async def get_admin_user(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
-    """Verify admin user"""
-    if current_user["email"] != ADMIN_EMAIL:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required"
-        )
-    return current_user
-
-def create_notification(title: str, message: str, notification_type: str,isAdminNotification:bool, target_users: List[str] = None):
-    """Create notification in database"""
-    try:
-        notification_data = {
-            "title": title,
-            "message": message,
-            "type": notification_type,
-            "target_users": target_users or [],
-            "created_at": datetime.utcnow().isoformat(),
-            "read_by": []
-        }
-        if isAdminNotification:
-            db.collection("admin-notifications").add(notification_data)
-        else:
-            db.collection("notifications").add(notification_data)
-        logger.info(f"Notification created: {title}")
-    except Exception as e:
-        logger.error(f"Error creating notification: {e}")
-
-def create_tracking_record(reservation_id: str, item_id: str, donor_id: str, requester_id: str) -> str:
-    """Create a new tracking record"""
-    try:
-        tracking_id = generate_tracking_id()
-        
-        tracking_data = {
-            "tracking_id": tracking_id,
-            "reservation_id": reservation_id,
-            "item_id": item_id,
-            "donor_id": donor_id,
-            "requester_id": requester_id,
-            "current_status": "request_accepted",
-            "status_history": [
-                {
-                    "status": "request_submitted",
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "notes": "Request submitted to donor",
-                    "updated_by": requester_id
-                },
-                {
-                    "status": "request_accepted",
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "notes": "Request accepted by donor",
-                    "updated_by": donor_id
-                }
-            ],
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat()
-        }
-        
-        db.collection("tracking").add(tracking_data)
-        logger.info(f"Tracking record created: {tracking_id}")
-        
-        return tracking_id
-        
-    except Exception as e:
-        logger.error(f"Error creating tracking record: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create tracking record"
-        )
-
-def update_tracking_status(tracking_id: str, new_status: str, notes: str = None, updated_by: str = None):
-    """Update tracking status"""
-    try:
-        # Find tracking record
-        tracking_query = db.collection("tracking").where("tracking_id", "==", tracking_id)
-        tracking_docs = list(tracking_query.stream())
-        
-        if not tracking_docs:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Tracking record not found"
-            )
-        
-        tracking_doc = tracking_docs[0]
-        tracking_data = tracking_doc.to_dict()
-        
-        # Add new status to history
-        new_status_entry = {
-            "status": new_status,
-            "timestamp": datetime.utcnow().isoformat(),
-            "notes": notes or TRACKING_STATUSES.get(new_status, {}).get("description", ""),
-            "updated_by": updated_by
-        }
-        
-        status_history = tracking_data.get("status_history", [])
-        status_history.append(new_status_entry)
-        
-        # Update tracking record
-        tracking_doc.reference.update({
-            "current_status": new_status,
-            "status_history": status_history,
-            "updated_at": datetime.utcnow().isoformat()
-        })
-        
-        # Send notification to requester
-        if new_status in TRACKING_STATUSES:
-            status_info = TRACKING_STATUSES[new_status]
-            create_notification(
-                f"📦 {status_info['title']}",
-                f"Tracking ID: {tracking_id} - {status_info['description']}",
-                "tracking_update",
-                [tracking_data["requester_id"]]
-            )
-        
-        logger.info(f"Tracking status updated: {tracking_id} -> {new_status}")
-        
-    except Exception as e:
-        logger.error(f"Error updating tracking status: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to update tracking status"
-        )
-
-async def get_current_user_Data_from_database(uid: str):
-    """Get user data from database"""
-    if not db:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Database connection not available"
-        )
-    try:
-        user_ref = db.collection("users").document(uid)
-        user_doc = user_ref.get()
-        return user_doc.to_dict()
-    except Exception as e:
-        logger.error(f"Error getting user data from database: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get user data from database"
-        )
 
 # API Routes
 @app.get("/")
@@ -435,9 +95,9 @@ async def health_check():
 async def verify_token(request: VerifyTokenRequest):
     """Verify Firebase ID token"""
     try:
-        user_data = verify_firebase_token(request.id_token)
+        user_data = verify_firebase_token(request.uid)
         
-        data= await get_current_user_Data_from_database(user_data["uid"])
+        data= await get_current_user_Data_from_database(db=db, uid=user_data["uid"])
         try:
             ip_address = "Unknown"  
             await email_service.send_login_notification(user_data["email"], user_data.get("name", "User"), ip_address)
@@ -562,11 +222,13 @@ async def create_user(
         user_ref.set(user_data)
         
         create_notification(
-            "New User Registered",
-            f"New user account registered: {request.full_name} ({request.email})",
-            "user_registration",
-            [ADMIN_EMAIL]
-        )
+            db=db,
+                title="New User Registered",
+                message=f"New user account registered: {request.full_name} ({request.email})",
+                notification_type="user_registration",
+                isAdminNotification=True,
+                target_users=[ADMIN_EMAIL]
+            )
 
         # Send welcome email
         try:
@@ -704,7 +366,7 @@ async def upload_file(
         file_content = await file.read()
         
         # Upload to storage
-        file_url = upload_file_to_storage(file_content, file.filename, file.content_type)
+        file_url = upload_file_to_storage( bucket, file_content, file.filename, file.content_type)
         
         return ApiResponse(
             success=True,
@@ -769,11 +431,24 @@ async def get_items(
         start_idx = (page - 1) * limit
         end_idx = start_idx + limit
         paginated_items = items[start_idx:end_idx]
-        
+    
+        donor_requests_item= await get_donor_reservations_data(current_user["uid"])
+        pending_requests_item=[]
+        for item in donor_requests_item:
+            if item["status"] == "pending":
+                pending_requests_item.append(item)
+
+
+        un_read_notifications_count = await get_unread_notifications_count(current_user)
+        all_unread_messages_count = await get_unread_messages_count(current_user["uid"])
+
         return ApiResponse(
             success=True,
             message="Items retrieved successfully",
             data={
+                "all_unread_messages_count": all_unread_messages_count,
+                "un_read_notifications_count": un_read_notifications_count,
+                "donor_requests_count": len(pending_requests_item),
                 "items": paginated_items,
                 "total": len(items),
                 "page": page,
@@ -804,7 +479,7 @@ async def create_item(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="User profile not found"
             )
-        current_user_data= await get_current_user_Data_from_database(current_user["uid"])
+        current_user_data= await get_current_user_Data_from_database( db=db, uid=current_user["uid"])
         user_data = user_doc.to_dict()
         
         item_data = {
@@ -842,17 +517,11 @@ async def create_item(
         doc_ref = db.collection("items").add(item_data)
         item_data["id"] = doc_ref[1].id
         
-        create_notification(
-            "New Item Donated",
-            f"New {request.category} item donated: {request.name} by {user_data.get('full_name', 'Unknown')}",
-            "item_donated",
-            [ADMIN_EMAIL]
-        )
 
         # Send donation confirmation email
         try:
             await email_service.send_item_donation_confirmation(
-                current_user["email"], 
+                current_user_data["email"], 
                 user_data.get("full_name", "User"), 
                 item_data
             )
@@ -1064,7 +733,7 @@ async def upload_item_images(
                 continue
             
             file_content = await file.read()
-            file_url = upload_file_to_storage(file_content, file.filename, file.content_type)
+            file_url = upload_file_to_storage( bucket, file_content, file.filename, file.content_type)
             uploaded_urls.append(file_url)
         
         # Update item with image URLs
@@ -1250,10 +919,12 @@ async def reserve_item(
         reservation_data["id"] = doc_ref[1].id
         
         create_notification(
-            "New Reservation Request",
-            f"Someone wants to reserve your item '{item_data.get('name', 'Unknown')}'",
-            "reservation_request",
-            [item_data.get("donor_id")]
+            db=db,
+            title="New Reservation Request",
+            message=f"Someone wants to reserve your item '{item_data.get('name', 'Unknown')}'",
+            notification_type="reservation_request",
+            target_users=[item_data.get("donor_id")],
+            isAdminNotification=False
         )
         
         return ApiResponse(
@@ -1319,6 +990,7 @@ async def mark_item_picked_up(
             tracking_doc = tracking_docs[0]
             tracking_data = tracking_doc.to_dict()
             update_tracking_status(
+                db,
                 tracking_data["tracking_id"], 
                 "picked_up", 
                 "Item successfully picked up by requester",
@@ -1367,13 +1039,6 @@ async def report_item(
         
         db.collection("reports").add(report_data)
         
-        # Notify admin
-        create_notification(
-            "Item Reported",
-            f"Item '{item_doc.to_dict().get('name', 'Unknown')}' has been reported for: {request.reason}",
-            "item_report",
-            [ADMIN_EMAIL]
-        )
         
         return ApiResponse(
             success=True,
@@ -1537,99 +1202,6 @@ async def search_items(
             detail="Failed to search items"
         )
 
-@app.get("/api/v1/items/nearby")
-async def get_nearby_items(
-    lat: float = Query(...),
-    lng: float = Query(...),
-    radius: int = Query(10),
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    """Get nearby items"""
-    try:
-        # This is a simplified implementation
-        # In production, you'd use geospatial queries
-        items_query = db.collection("items").where("status", "==", "available")
-        items_docs = items_query.stream()
-        
-        nearby_items = []
-        
-        for doc in items_docs:
-            item_data = doc.to_dict()
-            item_data["id"] = doc.id
-            
-            # Simple distance calculation (you'd use proper geospatial functions in production)
-            item_location = item_data.get("location", {})
-            if "latitude" in item_location and "longitude" in item_location:
-                # Add to nearby items (simplified - should calculate actual distance)
-                nearby_items.append(item_data)
-        
-        nearby_items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-        
-        return ApiResponse(
-            success=True,
-            message="Nearby items retrieved successfully",
-            data={"items": nearby_items}
-        )
-        
-    except Exception as e:
-        logger.error(f"Error retrieving nearby items: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve nearby items"
-        )
-
-@app.get("/api/v1/items/{item_id}/stats")
-async def get_item_stats(
-    item_id: str,
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    """Get item statistics"""
-    try:
-        item_ref = db.collection("items").document(item_id)
-        item_doc = item_ref.get()
-        
-        if not item_doc.exists:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Item not found"
-            )
-        
-        item_data = item_doc.to_dict()
-        
-        # Get reservations count
-        reservations_query = db.collection("reservations").where("item_id", "==", item_id)
-        reservations_count = len(list(reservations_query.stream()))
-        
-        # Get likes count
-        likes_count = item_data.get("likes", 0)
-        
-        # Get views count
-        views_count = item_data.get("views", 0)
-        
-        stats = {
-            "views": views_count,
-            "likes": likes_count,
-            "reservations": reservations_count,
-            "status": item_data.get("status", "unknown"),
-            "created_at": item_data.get("created_at"),
-            "updated_at": item_data.get("updated_at")
-        }
-        
-        return ApiResponse(
-            success=True,
-            message="Item statistics retrieved successfully",
-            data=stats
-        )
-        
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        logger.error(f"Error retrieving item stats: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve item statistics"
-        )
-
 # User-specific item routes
 @app.get("/api/v1/user/donations")
 async def get_user_donations(
@@ -1707,8 +1279,10 @@ async def get_user_pickups(
         reservations_query = db.collection("reservations").where("user_id", "==", current_user["uid"]).where("status", "==", "picked_up")
         reservations_docs = reservations_query.stream()
         
+        
         pickups = []
         for doc in reservations_docs:
+            print(doc.to_dict())
             pickup_data = doc.to_dict()
             pickup_data["id"] = doc.id
             
@@ -1725,7 +1299,7 @@ async def get_user_pickups(
         return ApiResponse(
             success=True,
             message="User pickups retrieved successfully",
-            data={"pickups": pickups}
+            data={"reservations": pickups}
         )
         
     except Exception as e:
@@ -1831,10 +1405,12 @@ async def create_reservation(
         reservation_data["id"] = doc_ref[1].id
         
         create_notification(
-            "New Reservation Request",
-            f"Someone wants to reserve your item '{item_data.get('name', 'Unknown')}'",
-            "reservation_request",
-            [item_data.get("donor_id")]
+            db=db,
+            title="New Reservation Request",
+            message=f"Someone wants to reserve your item '{item_data.get('name', 'Unknown')}'",
+            notification_type="reservation_request",
+            target_users=[item_data.get("donor_id")],
+            isAdminNotification=False
         )
 
         # Send emails to both donor and requester
@@ -1850,7 +1426,7 @@ async def create_reservation(
             
             # Email to requester
             await email_service.send_reservation_confirmation_email(
-                current_user["email"], 
+                user_data["email"], 
                 user_data.get("full_name", "User"), 
                 item_data.get("donor_name", "Donor"), 
                 item_data
@@ -1905,13 +1481,6 @@ async def cancel_reservation(
             "updated_at": datetime.utcnow().isoformat()
         })
         
-        # Notify donor
-        create_notification(
-            "Reservation Cancelled",
-            f"A reservation for your item '{reservation_data.get('item_name', 'Unknown')}' has been cancelled",
-            "reservation_cancelled",
-            [reservation_data.get("donor_id")]
-        )
         
         return ApiResponse(
             success=True,
@@ -1967,6 +1536,7 @@ async def update_reservation_status(
         if status == "approved":
             # Create tracking record
             tracking_id = create_tracking_record(
+                db,
                 reservation_id,
                 reservation_data["item_id"],
                 item_data.get("donor_id"),
@@ -2016,14 +1586,20 @@ async def update_reservation_status(
                 "last_message_at": datetime.utcnow().isoformat(),
                 "is_active": True
             }
-            db.collection("chats").add(chat_data)
+
+            is_already_chat_room = db.collection("chats").where("item_id", "==", reservation_data["item_id"]).where("requester_id", "==", reservation_data["user_id"]).where("donor_id", "==", item_data.get("donor_id")).get()
+            
+            if not is_already_chat_room:
+                db.collection("chats").add(chat_data)
             
             # Send approval notification with tracking ID
             create_notification(
-                "Request Approved! 🎉",
-                f"Great news! Your request for '{item_data.get('name', 'item')}' has been approved. Tracking ID: {tracking_id}. You can now track your item and chat with the donor.",
-                "reservation_approved",
-                [reservation_data["user_id"]]
+                db=db,
+                title="Request Approved! 🎉",
+                message=f"Great news! Your request for '{item_data.get('name', 'item')}' has been approved. Tracking ID: {tracking_id}. You can now track your item and chat with the donor.",
+                notification_type="reservation_approved",
+                target_users=[reservation_data["user_id"]],
+                isAdminNotification=False
             )
             
             # Send tracking email
@@ -2044,12 +1620,13 @@ async def update_reservation_status(
         elif status == "declined":
             # Send decline notification
             create_notification(
-                "Request Declined",
-                f"Unfortunately, your request for '{item_data.get('name', 'item')}' was declined. Don't worry, there are many other items available!",
-                "reservation_declined",
-                [reservation_data["user_id"]]
+                db=db,
+                title="Request Declined",
+                message=f"Unfortunately, your request for '{item_data.get('name', 'item')}' was declined. Don't worry, there are many other items available!",
+                notification_type="reservation_declined",
+                target_users=[reservation_data["user_id"]],
+                isAdminNotification=False
             )
-        
         return ApiResponse(
             success=True,
             message=f"Reservation {status} successfully",
@@ -2093,10 +1670,13 @@ async def reject_other_requests(item_id: str, approved_reservation_id: str, item
                 
                 # Send decline notification
                 create_notification(
-                    "Request Not Selected",
+                    db=db,
+                    title="Request Not Selected",
+                    message=
                     f"Your request for '{item_data.get('name', 'item')}' was not selected. The donor chose another requester. Keep looking - there are many other great items available!",
-                    "reservation_declined",
-                    [request_data["user_id"]]
+                    notification_type="reservation_declined",
+                    target_users=[request_data["user_id"]],
+                    isAdminNotification=False
                 )
         
         logger.info(f"Rejected {len(rejected_users)} other requests for item {item_id}")
@@ -2113,6 +1693,7 @@ async def get_tracking_info(
     """Get tracking information by tracking ID"""
     try:
         # Find tracking record
+        tracking_id = tracking_id.strip().upper()
         tracking_query = db.collection("tracking").where("tracking_id", "==", tracking_id)
         tracking_docs = list(tracking_query.stream())
         
@@ -2200,8 +1781,37 @@ async def update_tracking_status_endpoint(
             )
         
         # Update tracking status
-        update_tracking_status(tracking_id, request.status, request.notes, current_user["uid"])
-        
+        update_tracking_status( db,tracking_id, request.status, request.notes, current_user["uid"])
+        if request.status == "completed" or request.status == "picked_up":
+            # Update reservation status to completed
+            reservation_ref = db.collection("reservations").document(tracking_data["reservation_id"])
+            reservation_ref.update({
+                "status": "picked_up" ,
+                "completed_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat()
+            })
+            
+            # Update item status to donated if not bulk item
+            item_ref = db.collection("items").document(tracking_data["item_id"])
+            item_doc = item_ref.get()
+            if item_doc.exists:
+                item_data = item_doc.to_dict()
+                if not item_data.get("is_bulk_item", False):
+                    item_ref.update({
+                        "status": "donated",
+                        "updated_at": datetime.utcnow().isoformat()
+                    })
+            
+            # Send delivery notification
+            create_notification(
+                db=db,
+                title="Item Delivered! 🎉",
+                message=f"The item '{item_data.get('name', 'item')}' has been marked as delivered. Thank you for donating!",
+                notification_type="item_delivered",
+                target_users=[tracking_data["requester_id"]],
+                isAdminNotification=False
+            )
+
         return ApiResponse(
             success=True,
             message="Tracking status updated successfully"
@@ -2295,6 +1905,36 @@ async def get_donor_tracking(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve tracking records"
         )
+async def get_unread_messages_count(id:str):
+    try:
+        # Get chats where user is either donor or requester
+        donor_chats_query = db.collection("chats").where("donor_id", "==", id)
+        requester_chats_query = db.collection("chats").where("requester_id", "==", id)
+        
+        donor_chats = list(donor_chats_query.stream())
+        requester_chats = list(requester_chats_query.stream())
+        
+        all_chats = donor_chats + requester_chats
+
+        unread_count = 0
+        for chat_doc in all_chats:
+            chat_data = chat_doc.to_dict()
+            chat_data["id"] = chat_doc.id
+            messages_query = db.collection("messages").where("chat_id", "==", chat_data["id"])
+            unread_messages_query = messages_query.where("read", "==", False).where("sender_id", "!=", id)
+
+            if unread_messages_query.get():
+                  unread_count += len(list(unread_messages_query.stream()))
+            else:
+                unread_count += 0
+        return unread_count
+        
+    except Exception as e:
+        logger.error(f"Error retrieving chats: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve chats"
+        )
 
 # Chat endpoints
 @app.get("/api/v1/chats")
@@ -2323,6 +1963,19 @@ async def get_user_chats(
             if item_doc.exists:
                 chat_data["item"] = item_doc.to_dict()
             
+            messages_query = db.collection("messages").where("chat_id", "==", chat_data["id"])
+            last_message_query = messages_query.order_by("created_at", direction=firestore.Query.DESCENDING).limit(1)
+            unread_messages_query = messages_query.where("read", "==", False).where("sender_id", "!=", current_user["uid"])
+            if unread_messages_query.get():
+                chat_data["unread_count"] = len(list(unread_messages_query.stream()))
+            else:
+                chat_data["unread_count"] = 0
+            last_message_docs = list(last_message_query.stream())
+            if last_message_docs:
+                last_message_data = last_message_docs[0].to_dict()
+                chat_data["last_message"] = last_message_data.get("message", "")
+                chat_data["last_message_at"] = last_message_data.get("created_at", "")
+
             # Get other user details
             other_user_id = chat_data["donor_id"] if chat_data["requester_id"] == current_user["uid"] else chat_data["requester_id"]
             user_ref = db.collection("users").document(other_user_id)
@@ -2656,7 +2309,7 @@ async def delete_notification(
         
         # Check if user has permission to delete
         target_users = notification_data.get("target_users", [])
-        if current_user["email"] != ADMIN_EMAIL and current_user["uid"] not in target_users:
+        if  current_user["uid"] not in target_users:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access denied"
@@ -2678,7 +2331,6 @@ async def delete_notification(
             detail="Failed to delete notification"
         )
 
-@app.get("/api/v1/notifications/unread-count")
 async def get_unread_notifications_count(
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
@@ -2700,11 +2352,7 @@ async def get_unread_notifications_count(
             if current_user["uid"] not in notification_data.get("read_by", []):
                 unread_count += 1
         
-        return ApiResponse(
-            success=True,
-            message="Unread count retrieved successfully",
-            data={"count": unread_count}
-        )
+        return  unread_count
         
     except Exception as e:
         logger.error(f"Error getting unread count: {e}")
@@ -2818,7 +2466,341 @@ async def get_item_requests(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve item requests"
         )
+async def get_donor_reservations_data(
+    id: str
+):
+    try:
+        reservations_query = db.collection("reservations").where("donor_id", "==", id)
+        reservations_docs = reservations_query.stream()
+        
+        reservations = []
+        for doc in reservations_docs:
+            reservation_data = doc.to_dict()
+            reservation_data["id"] = doc.id
+            
+            # Get item details
+            item_ref = db.collection("items").document(reservation_data["item_id"])
+            item_doc = item_ref.get()
+            if item_doc.exists:
+                reservation_data["item"] = item_doc.to_dict()
+            
+            # Get requester details
+            requester_ref = db.collection("users").document(reservation_data["user_id"])
+            requester_doc = requester_ref.get()
+            if requester_doc.exists:
+                requester_data = requester_doc.to_dict()
+                reservation_data["user"] = {
+                    "full_name": requester_data.get("full_name", "Unknown"),
+                    "photo_url": requester_data.get("photo_url"),
+                    "rating": requester_data.get("rating", 0)
+                }
+            
+            reservations.append(reservation_data)
+        
+        # Sort by creation date, newest first
+        reservations.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        
+        return reservations
+    
+    except Exception as e:
+        logger.error(f"Error retrieving donor reservations: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve donor reservations"
+        )
 
+@app.get("/api/v1/donor/reservations")
+async def get_donor_reservations(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Get all reservation requests received by current user (as donor)"""
+    try:
+        reservations = await get_donor_reservations_data(current_user["uid"])
+        
+        return ApiResponse(
+            success=True,
+            message="Donor reservations retrieved successfully",
+            data={"reservations": reservations}
+        )
+        
+    except Exception as e:
+        logger.error(f"Error retrieving donor reservations: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve donor reservations"
+        )
+
+@app.post("/api/v1/chats/{chat_id}/messages/image")
+async def send_image_message(
+    chat_id: str,
+    image: UploadFile = File(...),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Send an image message in a chat"""
+    try:
+        if not bucket:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Storage not available"
+            )
+        
+        # Verify user has access to this chat
+        chat_ref = db.collection("chats").document(chat_id)
+        chat_doc = chat_ref.get()
+        
+        if not chat_doc.exists:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Chat not found"
+            )
+        
+        chat_data = chat_doc.to_dict()
+        if current_user["uid"] not in [chat_data["donor_id"], chat_data["requester_id"]]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied"
+            )
+        
+        # Validate file type
+        allowed_types = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+        if image.content_type not in allowed_types:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid file type. Only images are allowed."
+            )
+        
+        # Upload image to storage
+        file_content = await image.read()
+        image_url = upload_file_to_storage(bucket, file_content, f"chat_{chat_id}_{image.filename}", image.content_type)
+        
+        # Create message with image
+        message_data = {
+            "chat_id": chat_id,
+            "sender_id": current_user["uid"],
+            "message": "",
+            "image_url": image_url,
+            "created_at": datetime.utcnow().isoformat(),
+            "read": False
+        }
+        
+        doc_ref = db.collection("messages").add(message_data)
+        message_data["id"] = doc_ref[1].id
+        
+        # Update chat last message time
+        chat_ref.update({
+            "last_message_at": datetime.utcnow().isoformat(),
+            "last_message": "📷 Image"
+        })
+        
+        return ApiResponse(
+            success=True,
+            message="Image sent successfully",
+            data=message_data
+        )
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"Error sending image: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send image"
+        )
+
+@app.get("/api/v1/users/{user_id}/status")
+async def get_user_status(
+    user_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Get user online status and last seen"""
+    try:
+        user_ref = db.collection("users").document(user_id)
+        user_doc = user_ref.get()
+        
+        if not user_doc.exists:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        isOnline_check=user_doc.to_dict().get("last_seen", "")
+
+        is_online=False
+        if isOnline_check=="":
+            is_online=False
+        else:
+            is_online=(datetime.utcnow() - datetime.fromisoformat(isOnline_check)) < timedelta(minutes=2)
+
+        # Check if the user is online
+        user_ref.update({"is_online": is_online})
+        
+        user_data = user_doc.to_dict()
+        
+        return ApiResponse(
+            success=True,
+            message="User status retrieved successfully",
+            data={
+                "is_online": is_online,
+                "last_seen": user_data.get("last_seen"),
+                "typing_in_chat": user_data.get("typing_in_chat")
+            }
+        )
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"Error getting user status: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get user status"
+        )
+
+@app.put("/api/v1/users/status")
+async def update_user_status(
+    is_online: bool = Form(...),
+    typing_in_chat: str = Form(None),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Update user online status and typing indicator"""
+    try:
+        user_ref = db.collection("users").document(current_user["uid"])
+        
+        update_data = {
+            "is_online": is_online,
+            "last_seen": datetime.utcnow().isoformat()
+        }
+        
+        if typing_in_chat is not None:
+            update_data["typing_in_chat"] = typing_in_chat
+        
+        user_ref.update(update_data)
+        
+        return ApiResponse(
+            success=True,
+            message="Status updated successfully"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error updating user status: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update status"
+        )
+
+@app.put("/api/v1/chats/{chat_id}/messages/read")
+async def mark_messages_as_read(
+    chat_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Mark all messages in a chat as read for current user"""
+    try:
+        # Verify user has access to this chat
+        chat_ref = db.collection("chats").document(chat_id)
+        chat_doc = chat_ref.get()
+        
+        if not chat_doc.exists:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Chat not found"
+            )
+        
+        chat_data = chat_doc.to_dict()
+        if current_user["uid"] not in [chat_data["donor_id"], chat_data["requester_id"]]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied"
+            )
+        
+        # Mark all unread messages from other user as read
+        other_user_id = chat_data["donor_id"] if chat_data["requester_id"] == current_user["uid"] else chat_data["requester_id"]
+        
+        messages_query = db.collection("messages").where("chat_id", "==", chat_id).where("sender_id", "==", other_user_id).where("read", "==", False)
+        messages_docs = messages_query.stream()
+        
+        batch = db.batch()
+        for message_doc in messages_docs:
+            batch.update(message_doc.reference, {"read": True})
+        
+        batch.commit()
+        
+        return ApiResponse(
+            success=True,
+            message="Messages marked as read"
+        )
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"Error marking messages as read: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to mark messages as read"
+        )
+    
+@app.get("/api/v1/users/{user_id}")
+async def get_user_by_id(
+    user_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Get user profile by user ID"""
+    if not db:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database connection not available"
+        )
+    
+    try:
+        user_ref = db.collection("users").document(user_id)
+        user_doc = user_ref.get()
+        
+        if not user_doc.exists:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        user_data = user_doc.to_dict()
+        
+        # Get user statistics
+        # Count donations
+        donations_query = db.collection("items").where("donor_id", "==", user_id)
+        donations_count = len(list(donations_query.stream()))
+        print(donations_count)
+        # Count reservations
+        reservations_query = db.collection("reservations").where("user_id", "==", user_id)
+        reservations_count = len(list(reservations_query.stream()))
+        
+        # Count completed pickups
+        pickups_query = db.collection("reservations").where("user_id", "==", user_id).where("status", "==", "picked_up")
+        pickups_count = len(list(pickups_query.stream()))
+        
+        # Add statistics to user data
+        user_data["stats"] = {
+            "donations_count": donations_count,
+            "reservations_count": reservations_count,
+            "pickups_count": pickups_count
+        }
+        
+        # # Remove sensitive information for other users
+        # if user_id != current_user["uid"]:
+        #     user_data.pop("email", None)
+        #     user_data.pop("phoneNumber", None)
+        #     user_data.pop("isAdmin", None)
+        
+        return ApiResponse(
+            success=True,
+            message="User profile retrieved successfully",
+            data=user_data
+        )
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"Error retrieving user profile: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve user profile"
+        )
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
