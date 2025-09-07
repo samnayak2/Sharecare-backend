@@ -1,8 +1,3 @@
-Perfect 👍 You should keep that file as `README.md` inside your project root so anyone cloning or using the repo has clear setup instructions.
-
-Here’s the **final Markdown code** you can copy directly into a `README.md` file:
-
-````markdown
 # ShareCare Backend
 
 A **FastAPI-based backend service** for the ShareCare mobile application that handles:
@@ -82,6 +77,7 @@ export GOOGLE_APPLICATION_CREDENTIALS="BASE64_STRING_HERE"
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+
 The backend will now be available at:
 👉 [http://localhost:8000](http://localhost:8000)
 
@@ -98,7 +94,3 @@ The backend will now be available at:
 
 ```
 
----
-
-Do you want me to also create a **starter `requirements.txt`** for you with FastAPI, Uvicorn, and Google dependencies, so your project runs out of the box?
-```
